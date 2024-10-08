@@ -1,7 +1,6 @@
 #include "image.hh"
 #include "pipeline.hh"
 #include "fix_cpu.cuh"
-#include "cuda_tools/main_helper.hh"
 
 #include <vector>
 #include <iostream>
@@ -10,14 +9,9 @@
 #include <filesystem>
 #include <numeric>
 
-#include <rmm/mr/device/pool_memory_resource.hpp>
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
-
-    // RMM Setup
-    auto memory_resource = make_pool();
-    rmm::mr::set_current_device_resource(memory_resource.get());
 
     // -- Pipeline initialization
 
