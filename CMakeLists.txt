@@ -29,6 +29,6 @@ add_executable(main_cpu src/main.cu src/fix_cpu.cu)
 target_compile_options(main_cpu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${OpenMP_CXX_FLAGS}>)
 target_link_libraries(main_cpu PUBLIC OpenMP::OpenMP_CXX rmm::rmm raft::raft)
 
-add_executable(main_gpu_hand src/main_gpu_hand.cu src/cuda_tools/cuda_error_checking.cuh src/cuda_tools/main_helper.hh)
+add_executable(main_gpu_hand src/fix_gpu_hand.cuh src/fix_gpu_hand.cu  src/main_gpu_hand.cu src/cuda_tools/cuda_error_checking.cuh src/cuda_tools/main_helper.hh)
 target_compile_options(main_gpu_hand PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${OpenMP_CXX_FLAGS}>)
 target_link_libraries(main_gpu_hand PUBLIC OpenMP::OpenMP_CXX rmm::rmm raft::raft)
