@@ -36,7 +36,7 @@ bool parse_arguments(int argc, char* argv[])
     {
         if (argv[i] == std::string_view("--no-check"))
         {
-            Fixture::no_check = true;
+            //Fixture::no_check = true;
             std::swap(argv[i], argv[--argc]);
         }
         // Set iteration number to 1 not to mess with nsight
