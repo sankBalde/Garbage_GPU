@@ -25,6 +25,6 @@ set(CUDA_ARCHITECTURES "75")
 
 include_directories(src)
 
-add_executable(main src/main.cu src/cuda_tools/cuda_error_checking.cuh src/cuda_tools/main_helper.hh src/fix_cpu.cu bench/fixture.hh bench/main_helper.hh)
+add_executable(main src/main.cu src/cuda_tools/cuda_error_checking.cuh src/cuda_tools/main_helper.hh src/fix_cpu.cu)
 target_compile_options(main PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${OpenMP_CXX_FLAGS}>)
 target_link_libraries(main PUBLIC OpenMP::OpenMP_CXX rmm::rmm raft::raft)
