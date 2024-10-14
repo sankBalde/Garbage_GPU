@@ -10,6 +10,8 @@ void fix_image_cpu(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
 
+    std::cout << "mult " << image_size << "\n";
+    std::cout << "to_fix " << to_fix.size() << "\n";
     // #1 Compact
 
     // Build predicate vector
