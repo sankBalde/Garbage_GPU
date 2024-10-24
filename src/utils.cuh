@@ -120,10 +120,12 @@ void baseline_reduce(rmm::device_uvector<int>& buffer,
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
 }
-/*
+
+
+
 template <typename T>
 __global__
-void kernel_block_scan(raft::device_span<T> buffer, raft::device_span<T> block_sums)
+void kernel_block_scan_inclusif(raft::device_span<T> buffer, raft::device_span<T> block_sums)
 {
     extern __shared__ int sdata[];
     unsigned int id = threadIdx.x + blockIdx.x * blockDim.x;
@@ -159,31 +161,20 @@ void kernel_block_scan(raft::device_span<T> buffer, raft::device_span<T> block_s
         block_sums[blockIdx.x] = sdata[tid];
     }
 }
-*/
 
 template <typename T>
 __global__
-void kernel_block_scan(raft::device_span<T> buffer, raft::device_span<T> block_sums, bool exclusive)
+void kernel_block_scan_exlusif(raft::device_span<T> buffer, raft::device_span<T> block_sums)
 {
     extern __shared__ int sdata[];
     unsigned int id = threadIdx.x + blockIdx.x * blockDim.x;
     unsigned int tid = threadIdx.x;
 
-    // Charger les données dans la mémoire partagée
-    if (id < buffer.size()) {
-        sdata[tid] = buffer[id];
-    } else {
-        sdata[tid] = 0;
-    }
+    sdata[tid] = (id > 0) ? buffer[id - 1] : 0;
+
     __syncthreads();
 
-    // Si c'est un scan exclusif, décaler les valeurs
-    if (exclusive && tid == 0) {
-        sdata[tid] = 0;  // Le premier élément d'un scan exclusif est toujours 0
-    }
-    __syncthreads();
 
-    // Réduction parallèle
     for (unsigned int i = 1; i < blockDim.x; i *= 2)
     {
         int temp = 0;
@@ -196,21 +187,16 @@ void kernel_block_scan(raft::device_span<T> buffer, raft::device_span<T> block_s
         __syncthreads();
     }
 
-    // Déplacer les valeurs pour exclusive scan après la somme
-    if (exclusive && tid > 0) {
-        sdata[tid] = sdata[tid - 1];
-    }
 
-    // Écrire le résultat dans le buffer global
     if (id < buffer.size()) {
         buffer[id] = sdata[tid];
     }
 
-    // Enregistrer la somme finale du bloc
     if (tid == blockDim.x - 1 && blockIdx.x < block_sums.size()) {
         block_sums[blockIdx.x] = sdata[tid];
     }
 }
+
 
 template <typename T>
 __global__
@@ -233,19 +219,23 @@ void kernel_update_blocks(raft::device_span<T> buffer, raft::device_span<T> bloc
     }
 }
 
-/*
-void your_scan(rmm::device_uvector<int>& buffer)
+void your_scan(rmm::device_uvector<int>& buffer, bool exclusif)
 {
-    constexpr int blocksize = 64;
+    constexpr int blocksize = 256;
     int gridsize = (buffer.size() + blocksize - 1) / blocksize;
 
 
     rmm::device_uvector<int> block_sums(gridsize, buffer.stream());
-
-
-    kernel_block_scan<int><<<gridsize, blocksize, blocksize * sizeof(int), buffer.stream()>>>(
-        raft::device_span<int>(buffer.data(), buffer.size()),
-        raft::device_span<int>(block_sums.data(), block_sums.size()));
+    if (exclusif == true){
+        kernel_block_scan_exlusif<int><<<gridsize, blocksize, blocksize * sizeof(int), buffer.stream()>>>(
+            raft::device_span<int>(buffer.data(), buffer.size()),
+            raft::device_span<int>(block_sums.data(), block_sums.size()));
+    }
+    else{
+        kernel_block_scan_inclusif<int><<<gridsize, blocksize, blocksize * sizeof(int), buffer.stream()>>>(
+            raft::device_span<int>(buffer.data(), buffer.size()),
+            raft::device_span<int>(block_sums.data(), block_sums.size()));
+    }
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
 
@@ -260,32 +250,5 @@ void your_scan(rmm::device_uvector<int>& buffer)
         raft::device_span<int>(buffer.data(), buffer.size()),
         raft::device_span<int>(block_sums.data(), block_sums.size()));
 
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
-}*/
-void your_scan(rmm::device_uvector<int>& buffer, bool exclusive = false)
-{
-    constexpr int blocksize = 64;
-    int gridsize = (buffer.size() + blocksize - 1) / blocksize;
-
-    // Allocation du buffer pour les sommes intermédiaires des blocs
-    rmm::device_uvector<int> block_sums(gridsize, buffer.stream());
-
-    // Exécution du kernel de scan sur les blocs
-    kernel_block_scan<int><<<gridsize, blocksize, blocksize * sizeof(int), buffer.stream()>>>(
-        raft::device_span<int>(buffer.data(), buffer.size()),
-        raft::device_span<int>(block_sums.data(), block_sums.size()), exclusive);
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
-
-    // Somme les sommes des blocs si nécessaire
-    if (gridsize > 1) {
-        kernel_sum_block_sums<int><<<1, 1, 0, buffer.stream()>>>(
-            raft::device_span<int>(block_sums.data(), block_sums.size()));
-        CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
-    }
-
-    // Mise à jour des blocs avec les sommes intermédiaires
-    kernel_update_blocks<int><<<gridsize, blocksize, 0, buffer.stream()>>>(
-        raft::device_span<int>(buffer.data(), buffer.size()),
-        raft::device_span<int>(block_sums.data(), block_sums.size()));
     CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
 }
