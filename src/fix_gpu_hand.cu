@@ -60,13 +60,13 @@ void fix_image_gpu_hand(Image& to_fix)
 
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-    
-    std::vector<int> predicate_CPU(to_fix.size(), 0);
+
+    /*std::vector<int> predicate_CPU(to_fix.size(), 0);
 
     for (int i = 0; i < to_fix.size(); ++i) {
         if (to_fix.buffer[i] != garbage_val)
             predicate_CPU[i] = 1;
-    }
+    }*/
 
 
 
@@ -74,9 +74,9 @@ void fix_image_gpu_hand(Image& to_fix)
 
     // Appel de your_scan pour effectuer un scan exclusif
     your_scan(predicate, true);
-    std::exclusive_scan(predicate_CPU.begin(), predicate_CPU.end(), predicate_CPU.begin(), 0);
+    //std::inclusive_scan(predicate_CPU.begin(), predicate_CPU.end(), predicate_CPU.begin(), 0);
 
-    check_predicate(predicate, predicate_CPU);
+    //check_predicate(predicate, predicate_CPU);
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
 
@@ -88,93 +88,60 @@ void fix_image_gpu_hand(Image& to_fix)
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
 
-    // apply_map_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
-    //     raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-    //     image_size);
-    // CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
+     apply_map_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
+        raft::device_span<int>(d_buffer.data(), d_buffer.size()),
+         image_size);
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
 
-    //! CPU
+
+
+    //! Mettre le d_buffer dans le to_fix -> Format CPU
+    CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
+
+
     // #3 Histogram equalization
 
     // Histogram
 
-    //! Mettre le d_buffer dans le to_fix -> Format CPU
-    // CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
-
-    // for (int i = 0; i < image_size; ++i)
-    // {
-    //     if (i % 4 == 0)
-    //         to_fix.buffer[i] += 1;
-    //     else if (i % 4 == 1)
-    //         to_fix.buffer[i] -= 5;
-    //     else if (i % 4 == 2)
-    //         to_fix.buffer[i] += 3;
-    //     else if (i % 4 == 3)
-    //         to_fix.buffer[i] -= 8;
-    // }   // TODO : Erreur -> Valeurs negatives
-
-    // std::array<int, 256> histo;
-    // histo.fill(0);
-    // for (int i = 0; i < image_size; ++i)
-    //     ++histo[to_fix.buffer[i]];      // TODO: SEGFAULT
-
-    // // Compute the inclusive sum scan of the histogram
-
-    // std::inclusive_scan(histo.begin(), histo.end(), histo.begin());
-
-    // // Find the first non-zero value in the cumulative histogram
-
-    // auto first_none_zero = std::find_if(histo.begin(), histo.end(), [](auto v) { return v != 0; });
-
-    // const int cdf_min = *first_none_zero;
-
-    // // Apply the map transformation of the histogram equalization
-
-    // std::transform(to_fix.buffer, to_fix.buffer + image_size, to_fix.buffer,
-    //     [image_size, cdf_min, &histo](int pixel)
-    //         {
-    //             return std::roundf(((histo[pixel] - cdf_min) / static_cast<float>(image_size - cdf_min)) * 255.0f);
-    //         }
-    // );
-
+    /*
     //! GPU
 
     // // Allocation pour l'histogramme et le CDF
-    // rmm::device_uvector<int> histogram(256, d_buffer.stream());
-    // //rmm::device_uvector<int> cdf(256, rmm::cuda_stream_default);
+    rmm::device_uvector<int> histogram(256, d_buffer.stream());
+    rmm::device_uvector<int> cdf(256, rmm::cuda_stream_default);
 
     // // Lancement du kernel pour calculer l'histogramme
-    // histogram_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
-    //     raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-    //     raft::device_span<int>(histogram.data(), histogram.size()),
-    //     image_size);
+     histogram_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
+         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
+         raft::device_span<int>(histogram.data(), histogram.size()),
+         image_size);
 
-    // your_scan(histogram, false);
+    your_scan(histogram, false);
 
 
     // // Trouver le premier élément non nul dans le CDF
     // std::vector<int> histogram_host(256);
-    // CUDA_CHECK_ERROR(cudaMemcpy(histogram_host.data(), histogram.data(), histogram.size() * sizeof(int), cudaMemcpyDeviceToHost));
+     CUDA_CHECK_ERROR(cudaMemcpy(histogram_host.data(), histogram.data(), histogram.size() * sizeof(int), cudaMemcpyDeviceToHost));
 
     // // Trouver le premier élément non nul dans l'histogramme
-    // int cdf_min = 0;
-    // for (int i = 1; i < 256; ++i)
-    // {
-    //     if (histogram_host[i] != 0)
-    //     {
-    //         cdf_min = histogram_host[i];
-    //         break;
-    //     }
-    // }
+     int cdf_min = 0;
+     for (int i = 1; i < 256; ++i)
+     {
+         if (histogram_host[i] != 0)
+         {
+             cdf_min = histogram_host[i];
+             break;
+         }
+     }
 
     // // Appliquer l'égalisation de l'histogramme
-    // equalize_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
-    //     raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-    //     raft::device_span<int>(d_buffer.data(), d_buffer.size()),  // Réutilisation de d_buffer pour stocker le résultat
-    //     raft::device_span<int>(histogram.data(), histogram.size()),
-    //     cdf_min, image_size);
+     equalize_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
+         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
+         raft::device_span<int>(d_buffer.data(), d_buffer.size()),  // Réutilisation de d_buffer pour stocker le résultat
+         raft::device_span<int>(histogram.data(), histogram.size()),
+         cdf_min, image_size);
 
     // // Synchronisation pour assurer la fin de l'exécution
-    // CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-    // CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
+   CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
+     CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));*/
 }
