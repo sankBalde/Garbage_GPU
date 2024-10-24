@@ -77,9 +77,12 @@ __global__ void build_predicate_kernel(raft::device_span<int> buffer, raft::devi
 __global__ void scatter_kernel(raft::device_span<int> buffer, raft::device_span<int> predicate, int size)
 {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
+
     if (idx < size && buffer[idx] != -27)
     {
-        buffer[predicate[idx]] = buffer[idx];
+        int tmp = buffer[idx];
+        __syncthreads();
+        buffer[predicate[idx]] = tmp;
     }
 }
 
