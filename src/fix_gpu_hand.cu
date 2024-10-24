@@ -96,32 +96,36 @@ void fix_image_gpu_hand(Image& to_fix)
 
 
     //! Mettre le d_buffer dans le to_fix -> Format CPU
-    CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
+    //CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
 
 
     // #3 Histogram equalization
 
     // Histogram
 
-    /*
+
     //! GPU
 
     // // Allocation pour l'histogramme et le CDF
     rmm::device_uvector<int> histogram(256, d_buffer.stream());
     rmm::device_uvector<int> cdf(256, rmm::cuda_stream_default);
 
+    //CUDA_CHECK_ERROR(cudaMemset(histogram.data(), 0, histogram.size() * sizeof(int)));
+    //CUDA_CHECK_ERROR(cudaMemset(cdf.data(), 0, cdf.size() * sizeof(int)));
+
     // // Lancement du kernel pour calculer l'histogramme
      histogram_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
          raft::device_span<int>(d_buffer.data(), d_buffer.size()),
          raft::device_span<int>(histogram.data(), histogram.size()),
          image_size);
-
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(histogram.stream()));
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
     your_scan(histogram, false);
-
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
 
     // // Trouver le premier élément non nul dans le CDF
-    // std::vector<int> histogram_host(256);
-     CUDA_CHECK_ERROR(cudaMemcpy(histogram_host.data(), histogram.data(), histogram.size() * sizeof(int), cudaMemcpyDeviceToHost));
+    std::vector<int> histogram_host(256);
+    CUDA_CHECK_ERROR(cudaMemcpy(histogram_host.data(), histogram.data(), histogram.size() * sizeof(int), cudaMemcpyDeviceToHost));
 
     // // Trouver le premier élément non nul dans l'histogramme
      int cdf_min = 0;
@@ -143,5 +147,5 @@ void fix_image_gpu_hand(Image& to_fix)
 
     // // Synchronisation pour assurer la fin de l'exécution
    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-     CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));*/
+   CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
 }
