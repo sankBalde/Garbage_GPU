@@ -60,9 +60,21 @@ __global__ void equalize_kernel(const raft::device_span<int> input, raft::device
 
     if (idx < image_size)
     {
-        output[idx] = roundf(((cdf[input[idx]] - cdf_min) / static_cast<float>(image_size - cdf_min)) * 255.0f);
+        // Normalisation du pixel après égalisation de l'histogramme
+        float normalized_value = ((cdf[input[idx]] - cdf_min) / static_cast<float>(image_size - cdf_min)) * 255.0f;
+
+        // Limitation de la valeur dans la plage [0, 255]
+        output[idx] = min(max(roundf(normalized_value), 0.0f), 255.0f);
+
+        // Pour debug : afficher si la valeur est en dehors des bornes
+        if (output[idx] < 0 || output[idx] > 255)
+        {
+            printf("Valeur hors plage à %d: valeur = %d, cdf_min = %d, cdf_input_idx = %d\n",
+                   idx, output[idx], cdf_min, cdf[input[idx]]);
+        }
     }
 }
+
 
 
 __global__ void build_predicate_kernel(raft::device_span<int> buffer, raft::device_span<int> predicate, int garbage_val, int size)
@@ -99,6 +111,7 @@ __global__ void scatter_kernel(raft::device_span<int> buffer, raft::device_span<
             buffer[idx] += 3;
         else if (idx % 4 == 3)
             buffer[idx] -= 8;
+
     }
 }
 
