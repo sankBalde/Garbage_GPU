@@ -9,19 +9,29 @@
 
 __global__ void histogram_kernel(const raft::device_span<int> input, raft::device_span<int> histogram, int image_size)
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    extern __shared__ int sdata[];
 
-    // Réinitialiser l'histogramme à zéro
-    if (idx < 256)
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int tid = threadIdx.x;
+
+    // Réinitialiser l'histogramme partagé à zéro
+    if (tid < 256)
     {
-        histogram[idx] = 0;
+        sdata[tid] = 0;
     }
-    __syncthreads();  // Synchronisation pour s'assurer que tous les histogrammes sont initialisés
+    __syncthreads();
 
-    // Compter les occurrences des pixels
+    // Compter les occurrences des pixels dans la mémoire partagée
     if (idx < image_size)
     {
-        atomicAdd(&histogram[input[idx]], 1);
+        atomicAdd(&sdata[input[idx]], 1);
+    }
+    __syncthreads();
+
+    // Transférer les résultats non nuls de sdata vers histogram en mémoire globale
+    if (tid < 256 && sdata[tid] > 0)
+    {
+        atomicAdd(&histogram[tid], sdata[tid]);
     }
 }
 

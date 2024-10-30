@@ -1,0 +1,17 @@
+Quand on bench, il y a 300 iterations
+
+Temps les plus importants :
+
+histogram_kernel -> CudaMemSet a 0 avant le kernel + utilisation shared memory
+kernel_sum_block_sums
+
+scatter_kernel : Full en Memory throughtput
+
+
+Amelioration 1 :
+
+histogram_kernel:
+    - CudaMemSet a 0 avant le kernel
+    - Utilisation shared memory
+
+    vitesse 'histogram': x12.37
