@@ -1,8 +1,90 @@
 #include "fix_gpu_industrial.cuh"
 #include "utils.cuh"
+#include <thrust/device_vector.h>
+#include <thrust/scan.h>
+#include <thrust/count.h>
+#include <thrust/sort.h>
+#include <thrust/copy.h>
+#include <thrust/transform.h>
+#include <thrust/fill.h>
+#include <thrust/binary_search.h>
+#include <thrust/device_vector.h>
+#include <thrust/functional.h>
+#include <cub/cub.cuh>
+
+struct transform_op
+{
+    __host__ __device__
+    int operator()(const thrust::tuple<int, int>& input)
+    {
+        int value = thrust::get<0>(input);
+        int index = thrust::get<1>(input);
+
+        if (index % 4 == 0)
+            return value + 1;
+        else if (index % 4 == 1)
+            return value - 5;
+        else if (index % 4 == 2)
+            return value + 3;
+        else
+            return value - 8;
+    }
+};
+
+void fix_image_gpu_industrial(Image& to_fix)
+{
+    const int image_size = to_fix.width * to_fix.height;
+    const int garbage_val = -27;
+
+    // Créer un stream CUDA
+    cudaStream_t stream;
+    CUDA_CHECK_ERROR(cudaStreamCreate(&stream));
+
+    // Copier le buffer de `to_fix` vers un `thrust::device_vector`
+    thrust::device_vector<int> d_buffer(to_fix.buffer, to_fix.buffer + to_fix.size());
+
+    // Faire une copie profonde de d_buffer pour le scatter final
+    thrust::device_vector<int> d_buffer_copy = d_buffer;
+
+    // Créer le vecteur de prédicat
+    thrust::device_vector<int> predicate(to_fix.size());
+
+    // Générer le vecteur de prédicat
+    thrust::transform(thrust::cuda::par.on(stream), d_buffer.begin(), d_buffer.end(), predicate.begin(),
+                      [garbage_val] __device__ (int val) { return val != garbage_val ? 1 : 0; });
+
+    // Effectuer un scan exclusif pour calculer les indices des éléments valides
+    thrust::exclusive_scan(thrust::cuda::par.on(stream), predicate.begin(), predicate.end(), predicate.begin(), 0);
+
+    // Appliquer `thrust::scatter_if` pour redistribuer les éléments
+    thrust::scatter_if(thrust::cuda::par.on(stream),
+                       d_buffer_copy.begin(), d_buffer_copy.end(),  // Données à redistribuer
+                       predicate.begin(),                            // Position cible
+                       d_buffer_copy.begin(),                            // Conditions de filtrage
+                       d_buffer.begin(),                             // Sortie
+                       [garbage_val] __device__ (int val) { return val != garbage_val; }); // Filtrer les valeurs
+
+    // Transformer les valeurs de d_buffer en fonction de l'index modulo 4
+    thrust::transform(thrust::cuda::par.on(stream),
+                      thrust::make_zip_iterator(thrust::make_tuple(d_buffer.begin(), thrust::counting_iterator<int>(0))),
+                      thrust::make_zip_iterator(thrust::make_tuple(d_buffer.end(), thrust::counting_iterator<int>(image_size))),
+                      d_buffer.begin(),
+                      transform_op());
+
+    // Synchroniser le stream pour s'assurer que toutes les opérations sont terminées
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(stream));
+
+    // Copier le résultat final dans le buffer d'origine
+    CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, thrust::raw_pointer_cast(d_buffer.data()),
+                                image_size * sizeof(int), cudaMemcpyDeviceToHost));
+
+    // Détruire le stream
+    CUDA_CHECK_ERROR(cudaStreamDestroy(stream));
+}
 
 
-bool check_predicate(const rmm::device_uvector<int>& predicate_gpu, const std::vector<int>& predicate_cpu) {
+/*
+bool check_predicate(const thrust::device_vector<int>& predicate_gpu, const std::vector<int>& predicate_cpu) {
     // Vérifier que les tailles des deux vecteurs sont identiques
     if (predicate_gpu.size() != predicate_cpu.size()) {
         std::cerr << "Size mismatch: GPU predicate size (" << predicate_gpu.size()
@@ -14,7 +96,7 @@ bool check_predicate(const rmm::device_uvector<int>& predicate_gpu, const std::v
     std::vector<int> predicate_gpu_host(predicate_gpu.size());
 
     // Copier les données du GPU vers le vecteur hôte
-    CUDA_CHECK_ERROR(cudaMemcpy(predicate_gpu_host.data(), predicate_gpu.data(),
+    CUDA_CHECK_ERROR(cudaMemcpy(predicate_gpu_host.data(), thrust::raw_pointer_cast(predicate_gpu.data()),
                                 predicate_gpu.size() * sizeof(int), cudaMemcpyDeviceToHost));
 
     // Comparer les deux vecteurs élément par élément
@@ -30,122 +112,35 @@ bool check_predicate(const rmm::device_uvector<int>& predicate_gpu, const std::v
     return true;
 }
 
+// Appeler le kernel de scatter pour réorganiser les éléments
+/*scatter_kernel<<<(to_fix.size() + 255) / 256, 256, 0, d_buffer.stream()>>>(
+    raft::device_span<int>(d_buffer.data(), d_buffer.size()),
+    raft::device_span<int>(predicate.data(), predicate.size()),
+    to_fix.size());
+CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
 
+// Réaliser l’égalisation d’histogramme
+thrust::device_vector<int> histogram(256, 0);
+thrust::device_vector<int> d_image(d_buffer.data(), d_buffer.data() + image_size);
+thrust::sort(d_image.begin(), d_image.end());
+thrust::counting_iterator<int> search_begin(0);
+thrust::upper_bound(d_image.begin(), d_image.end(), search_begin, search_begin + 256, histogram.begin());
 
-void fix_image_gpu_industrial(Image& to_fix)
-{
-    const int image_size = to_fix.width * to_fix.height;
-    int block_size = 256;
-    int grid_size_non_garbage = (image_size + block_size - 1) / block_size;
-    int grid_size_avec_garbage = (to_fix.size() + block_size - 1) / block_size;
+// Calculer le CDF
+thrust::exclusive_scan(histogram.begin(), histogram.end(), histogram.begin());
 
-    // Allocation sur GPU pour d_buffer
-    rmm::device_uvector<int> d_buffer(to_fix.size(), rmm::cuda_stream_default);
+// Trouver cdf_min
+//! error avec copy_if
+/*int cdf_min;
+thrust::copy_if(histogram.begin(), histogram.end(), thrust::make_counting_iterator(1), &cdf_min,
+                [] __device__(int x) { return x != 0; });
 
-    // Si to_fix.buffer est en mémoire hôte (CPU), il faut le copier sur le GPU.
-    // Si to_fix.buffer est déjà sur le GPU, tu peux le faire directement.
-    CUDA_CHECK_ERROR(cudaMemcpy(d_buffer.data(), to_fix.buffer, to_fix.size() * sizeof(int), cudaMemcpyHostToDevice));
+// Appliquer l’égalisation
+equalize_kernel<<<(image_size + 255) / 256, 256, 0, d_buffer.stream()>>>(
+    raft::device_span<int>(d_buffer.data(), d_buffer.size()),
+    raft::device_span<int>(d_buffer.data(), d_buffer.size()),
+    raft::device_span<int>(histogram.data().get(), 256),
+    cdf_min, image_size);*/
 
-    // Allocation sur GPU pour predicate
-    rmm::device_uvector<int> predicate(to_fix.size(), d_buffer.stream());
-    CUDA_CHECK_ERROR(cudaMemset(predicate.data(), 0, predicate.size() * sizeof(int)));
-    constexpr int garbage_val = -27;
+//CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
 
-    // Lancement du kernel avec les données sur GPU
-    build_predicate_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
-        raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-        raft::device_span<int>(predicate.data(), predicate.size()),
-        garbage_val, to_fix.size());    // TODO : Missmatch
-    CUDA_CHECK_ERROR(cudaGetLastError());
-
-
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-
-    /*std::vector<int> predicate_CPU(to_fix.size(), 0);
-
-    for (int i = 0; i < to_fix.size(); ++i) {
-        if (to_fix.buffer[i] != garbage_val)
-            predicate_CPU[i] = 1;
-    }*/
-
-
-
-    // Synchronisation pour assurer la fin de l'exécution
-
-    // Appel de your_scan pour effectuer un scan exclusif
-    your_scan(predicate, true);
-    //std::inclusive_scan(predicate_CPU.begin(), predicate_CPU.end(), predicate_CPU.begin(), 0);
-
-    //check_predicate(predicate, predicate_CPU);
-
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-
-    // Lancement du kernel de scatter
-    scatter_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
-        raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-        raft::device_span<int>(predicate.data(), predicate.size()),
-        to_fix.size());
-
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-
-     apply_map_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
-        raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-         image_size);
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-
-
-
-    //! Mettre le d_buffer dans le to_fix -> Format CPU
-    //CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
-
-
-    // #3 Histogram equalization
-
-    // Histogram
-
-
-    //! GPU
-
-    // // Allocation pour l'histogramme et le CDF
-    rmm::device_uvector<int> histogram(256, d_buffer.stream());
-    rmm::device_uvector<int> cdf(256, rmm::cuda_stream_default);
-
-    //CUDA_CHECK_ERROR(cudaMemset(histogram.data(), 0, histogram.size() * sizeof(int)));
-    //CUDA_CHECK_ERROR(cudaMemset(cdf.data(), 0, cdf.size() * sizeof(int)));
-
-    // // Lancement du kernel pour calculer l'histogramme
-     histogram_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
-         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-         raft::device_span<int>(histogram.data(), histogram.size()),
-         image_size);
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(histogram.stream()));
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-    your_scan(histogram, false);
-    CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-
-    // // Trouver le premier élément non nul dans le CDF
-    std::vector<int> histogram_host(256);
-    CUDA_CHECK_ERROR(cudaMemcpy(histogram_host.data(), histogram.data(), histogram.size() * sizeof(int), cudaMemcpyDeviceToHost));
-
-    // // Trouver le premier élément non nul dans l'histogramme
-     int cdf_min = 0;
-     for (int i = 1; i < 256; ++i)
-     {
-         if (histogram_host[i] != 0)
-         {
-             cdf_min = histogram_host[i];
-             break;
-         }
-     }
-
-    // // Appliquer l'égalisation de l'histogramme
-     equalize_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
-         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
-         raft::device_span<int>(d_buffer.data(), d_buffer.size()),  // Réutilisation de d_buffer pour stocker le résultat
-         raft::device_span<int>(histogram.data(), histogram.size()),
-         cdf_min, image_size);
-
-    // // Synchronisation pour assurer la fin de l'exécution
-   CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-   CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
-}
