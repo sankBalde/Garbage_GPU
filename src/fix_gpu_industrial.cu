@@ -39,7 +39,6 @@ struct transform_op
             return value - 8;
     }
 };
-
 void fix_image_gpu_industrial(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
@@ -63,12 +62,11 @@ void fix_image_gpu_industrial(Image& to_fix)
     thrust::exclusive_scan(thrust::cuda::par.on(stream), predicate.begin(), predicate.end(), predicate.begin(), 0);
 
     thrust::scatter_if(thrust::cuda::par.on(stream),
-                       d_buffer_copy.begin(), d_buffer_copy.end(),  // Données à redistribuer
-                       predicate.begin(),                            // Position cible
-                       d_buffer_copy.begin(),                            // Conditions de filtrage
-                       d_buffer.begin(),                             // Sortie
-                       [garbage_val] __device__ (int val) { return val != garbage_val; }); // Filtrer les valeurs
-
+                       d_buffer_copy.begin(), d_buffer_copy.end(),
+                       predicate.begin(),
+                       d_buffer_copy.begin(),
+                       d_buffer.begin(),
+                       [garbage_val] __device__ (int val) { return val != garbage_val; });
 
     // Transformer les valeurs de `d_buffer` en fonction de l'index modulo 4
     thrust::transform(thrust::cuda::par.on(stream),
@@ -77,36 +75,29 @@ void fix_image_gpu_industrial(Image& to_fix)
                       d_buffer.begin(),
                       transform_op());
 
-    // Allocations pour le calcul de l'histogramme avec CUB
+    // Allocation et calcul de l'histogramme avec CUB
     thrust::device_vector<int> histogram(num_bins, 0);
     int *d_histogram = thrust::raw_pointer_cast(histogram.data());
 
-    void* d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
-    cub::DeviceHistogram::HistogramEven(d_temp_storage, temp_storage_bytes, thrust::raw_pointer_cast(d_buffer.data()), d_histogram, num_bins, min_val, max_val + 1, image_size, stream);
-    cudaMalloc(&d_temp_storage, temp_storage_bytes);
-    cub::DeviceHistogram::HistogramEven(d_temp_storage, temp_storage_bytes, thrust::raw_pointer_cast(d_buffer.data()), d_histogram, num_bins, min_val, max_val + 1, image_size, stream);
+    cub::DeviceHistogram::HistogramEven(nullptr, temp_storage_bytes, thrust::raw_pointer_cast(d_buffer.data()), d_histogram, num_bins, min_val, max_val + 1, image_size, stream);
+    thrust::device_vector<char> temp_storage(temp_storage_bytes);
+    cub::DeviceHistogram::HistogramEven(thrust::raw_pointer_cast(temp_storage.data()), temp_storage_bytes, thrust::raw_pointer_cast(d_buffer.data()), d_histogram, num_bins, min_val, max_val + 1, image_size, stream);
 
     // Calcul du CDF pour l'égalisation
     thrust::device_vector<float> cdf(num_bins);
     thrust::inclusive_scan(thrust::cuda::par.on(stream), histogram.begin(), histogram.end(), cdf.begin());
 
-    // Normaliser le CDF pour obtenir les valeurs d'égalisation
     float min_cdf;
-    cudaMemcpy(&min_cdf, thrust::raw_pointer_cast(cdf.data()), sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK_ERROR(cudaMemcpy(&min_cdf, thrust::raw_pointer_cast(cdf.data()), sizeof(float), cudaMemcpyDeviceToHost));
     thrust::transform(thrust::cuda::par.on(stream), cdf.begin(), cdf.end(), cdf.begin(), [min_cdf, image_size] __device__ (float c) {
         return (c - min_cdf) / (image_size - min_cdf) * 255.0f;
     });
 
-    // Remapper les valeurs de `d_buffer` pour appliquer l'égalisation
     thrust::transform(thrust::cuda::par.on(stream), d_buffer.begin(), d_buffer.end(), d_buffer.begin(), [d_cdf = thrust::raw_pointer_cast(cdf.data())] __device__ (int val) {
         return static_cast<int>(d_cdf[val]);
     });
 
-    // Copier le résultat final dans le buffer d'origine
     CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, thrust::raw_pointer_cast(d_buffer.data()), image_size * sizeof(int), cudaMemcpyDeviceToHost));
-
-    // Libérer les ressources
-    //cudaFree(d_temp_storage);
     CUDA_CHECK_ERROR(cudaStreamDestroy(stream));
 }
