@@ -177,6 +177,9 @@ void fix_image_gpu_hand(Image& to_fix)
     
 //! 1 - GARBAGE VALUES (-27)
 
+    // Initialiser predicate à zéro
+    CUDA_CHECK_ERROR(cudaMemset(predicate.data(), 0, predicate.size() * sizeof(int)));
+
     constexpr int garbage_val = -27;
 
     build_predicate_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
@@ -189,6 +192,8 @@ void fix_image_gpu_hand(Image& to_fix)
     // Scan exclusif
     your_scan(predicate, true);
 
+    //? Rajouter la ligne en dessous pour le nouveau scatter_kernel
+    // int shared_mem_size = block_size * sizeof(int);
     scatter_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         raft::device_span<int>(predicate.data(), predicate.size()),
@@ -238,6 +243,10 @@ void fix_image_gpu_hand(Image& to_fix)
         }
     }
 
+    //? Modifier equealize_kernel pour qu'il prenne en compte le cdf_min 
+    // find_cdf_min_kernel<<<1, 256, 256 * sizeof(int), d_buffer.stream()>>>(histogram.data(), cdf.data(), image_size);
+
+
     equalize_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),  // Réutilisation de d_buffer pour stocker le résultat
@@ -246,4 +255,65 @@ void fix_image_gpu_hand(Image& to_fix)
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
     CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
+}
+
+
+void your_reduce(rmm::device_uvector<int>& buffer,
+                 rmm::device_scalar<int>& total)
+{
+    constexpr int blocksize = 256;
+    int gridsize = (buffer.size() + blocksize - 1) / blocksize;
+
+    int shared_memory_size = blocksize * sizeof(int);
+
+    if (gridsize == 1) {
+        kernel_your_reduce_grid_stride_loop<int><<<gridsize, blocksize, shared_memory_size, buffer.stream()>>>(
+            raft::device_span<const int>(buffer.data(), buffer.size()),
+            raft::device_span<int>(total.data(), 1));
+        CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
+        return;
+    }
+
+//! Si on a plus de 64 valeurs
+
+    rmm::device_uvector<int> partial_sums(gridsize, buffer.stream());
+    rmm::device_uvector<int> partial_sums_bis(gridsize, buffer.stream());
+
+    kernel_your_reduce_grid_stride_loop<int><<<gridsize, blocksize, shared_memory_size, buffer.stream()>>>(
+        raft::device_span<const int>(buffer.data(), buffer.size()),
+        raft::device_span<int>(partial_sums.data(), partial_sums.size()));
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
+
+    int cpt = 0;
+    
+    while (gridsize > 1) {
+
+        gridsize = (gridsize + blocksize - 1) / blocksize;
+
+        if (cpt % 2 == 0) {
+            kernel_your_reduce_grid_stride_loop<int><<<gridsize, blocksize, shared_memory_size, buffer.stream()>>>(
+                raft::device_span<const int>(partial_sums.data(), partial_sums.size()),
+                raft::device_span<int>(partial_sums_bis.data(), partial_sums_bis.size()));
+            CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
+
+            partial_sums_bis.resize(gridsize, buffer.stream());
+        } else {
+            kernel_your_reduce_grid_stride_loop<int><<<gridsize, blocksize, shared_memory_size, buffer.stream()>>>(
+                raft::device_span<const int>(partial_sums_bis.data(), partial_sums_bis.size()),
+                raft::device_span<int>(partial_sums.data(), partial_sums.size()));
+            CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
+
+            partial_sums.resize(gridsize, buffer.stream());
+        }
+
+        //? Retire pour les performances
+        // partial_sums = std::move(new_partial_sums);
+
+        cpt += 1;
+    }
+
+    kernel_your_reduce_grid_stride_loop<int><<<1, blocksize, shared_memory_size, buffer.stream()>>>(
+        raft::device_span<int>(partial_sums.data(), partial_sums.size()),
+        raft::device_span<int>(total.data(), 1));
+    CUDA_CHECK_ERROR(cudaStreamSynchronize(buffer.stream()));
 }

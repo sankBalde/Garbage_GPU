@@ -11,6 +11,7 @@
 #include <numeric>
 
 #include "fix_gpu_hand.cuh"
+// #include "utils.cuh"
 
 #include <rmm/mr/device/pool_memory_resource.hpp>
 
@@ -73,7 +74,25 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     {
         auto& image = images[i];
         const int image_size = image.width * image.height;
-        image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
+        // image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
+
+        // Initialiser un buffer sur le GPU pour chaque image
+        rmm::device_uvector<int> buffer(image_size, rmm::cuda_stream_default);
+        rmm::device_scalar<int> total(0, rmm::cuda_stream_default);
+
+        // Copier les données de l'image du CPU vers le GPU
+        cudaMemcpy(buffer.data(), image.buffer, image_size * sizeof(int), cudaMemcpyHostToDevice);
+
+        // FIXME: Remplir le buffer avec l'image
+        your_reduce(buffer, total);
+
+        // Copier le résultat total du GPU vers le CPU
+        int result;
+        cudaMemcpy(&result, total.data(), sizeof(int), cudaMemcpyDeviceToHost);
+
+        // Assigner le résultat dans l'image
+        image.to_sort.total = result;
+
     }
 
     // - All totals are known, sort images accordingly (OPTIONAL)
