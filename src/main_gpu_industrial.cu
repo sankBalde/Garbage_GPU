@@ -11,6 +11,26 @@
 #include <numeric>
 
 #include "fix_gpu_industrial.cuh"
+#include <thrust/device_vector.h>
+#include <thrust/scan.h>
+#include <thrust/count.h>
+#include <thrust/sort.h>
+#include <thrust/copy.h>
+#include <thrust/transform.h>
+#include <thrust/fill.h>
+#include <thrust/binary_search.h>
+#include <thrust/device_vector.h>
+#include <thrust/functional.h>
+#include <cub/cub.cuh>
+
+#include <thrust/device_vector.h>
+#include <thrust/transform.h>
+#include <thrust/scatter.h>
+#include <thrust/execution_policy.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <cub/cub.cuh>
+#include <cuda_runtime.h>
+#include <iostream>
 
 #include <rmm/mr/device/pool_memory_resource.hpp>
 
@@ -68,50 +88,32 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     // TODO : make it GPU compatible (aka faster)
     // You can use multiple CPU threads for your GPU version using openmp or not
     // Up to you :)
+    thrust::device_vector<int> totals(nb_images);
     #pragma omp parallel for
     for (int i = 0; i < nb_images; ++i)
     {
-        auto& image = images[i];
-        const int image_size = image.width * image.height;
-        image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
+        const int image_size = images[i].width * images[i].height;
+
+        thrust::device_vector<int> d_image(images[i].buffer, images[i].buffer + images[i].size());
+        totals[i] = thrust::reduce(thrust::device, d_image.begin(), d_image.end(), 0);
     }
 
-    // - All totals are known, sort images accordingly (OPTIONAL)
-    // Moving the actual images is too expensive, sort image indices instead
-    // Copying to an id array and sort it instead
+    // Tri des images par total
+    thrust::device_vector<int> ids(nb_images);
+    thrust::sequence(ids.begin(), ids.end());
+    thrust::sort_by_key(totals.begin(), totals.end(), ids.begin());
 
-    // TODO OPTIONAL : for you GPU version you can store it the way you want
-    // But just like the CPU version, moving the actual images while sorting will be too slow
-    using ToSort = Image::ToSort;
-    std::vector<ToSort> to_sort(nb_images);
-    std::generate(to_sort.begin(), to_sort.end(), [n = 0, images] () mutable
-    {
-        return images[n++].to_sort;
-    });
-
-    // TODO OPTIONAL : make it GPU compatible (aka faster)
-    std::sort(to_sort.begin(), to_sort.end(), [](ToSort a, ToSort b) {
-        return a.total < b.total;
-    });
-
-    // TODO : Test here that you have the same results
-    // You can compare visually and should compare image vectors values and "total" values
-    // If you did the sorting, check that the ids are in the same order
+    // Affichage des résultats
     for (int i = 0; i < nb_images; ++i)
     {
-        std::cout << "Image #" << images[i].to_sort.id << " total : " << images[i].to_sort.total << std::endl;
+        int sorted_id = ids[i];
+        std::cout << "Image #" << images[sorted_id].to_sort.id << " total : " << totals[sorted_id] << std::endl;
         std::ostringstream oss;
-        oss << "Image#" << images[i].to_sort.id << ".pgm";
-        std::string str = oss.str();
-        images[i].write(str);
+        oss << "Image#" << images[sorted_id].to_sort.id << ".pgm";
+        images[sorted_id].write(oss.str());
     }
 
     std::cout << "Done, the internet is safe now :)" << std::endl;
-
-    // Cleaning
-    // TODO : Don't forget to update this if you change allocation style
-    for (int i = 0; i < nb_images; ++i)
-        free(images[i].buffer);
 
     return 0;
 }
