@@ -1,5 +1,6 @@
 #include "fix_gpu_hand.cuh"
 #include "utils.cuh"
+#include <raft/common/nvtx.hpp>
 
 
 bool check_predicate(const rmm::device_uvector<int>& predicate_gpu, const std::vector<int>& predicate_cpu) {
@@ -163,6 +164,7 @@ void fix_image_gpu_hand_old(Image& to_fix)
 
 void fix_image_gpu_hand(Image& to_fix)
 {
+    raft::common::nvtx::range fun_scope("Fix Image GPU Hand");
     const int image_size = to_fix.width * to_fix.height;
     int block_size = 256;
     int grid_size_non_garbage = (image_size + block_size - 1) / block_size;
@@ -181,32 +183,37 @@ void fix_image_gpu_hand(Image& to_fix)
     CUDA_CHECK_ERROR(cudaMemset(predicate.data(), 0, predicate.size() * sizeof(int)));
 
     constexpr int garbage_val = -27;
-
+    raft::common::nvtx::push_range("Build Predicate Kernel");
     build_predicate_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         raft::device_span<int>(predicate.data(), predicate.size()),
         garbage_val, to_fix.size());
     CUDA_CHECK_ERROR(cudaGetLastError());
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
+    raft::common::nvtx::pop_range();
 
     // Scan exclusif
+    raft::common::nvtx::push_range("Scan Exclusif Predicate");
     your_scan(predicate, true);
+    raft::common::nvtx::pop_range();
 
     //? Rajouter la ligne en dessous pour le nouveau scatter_kernel
     // int shared_mem_size = block_size * sizeof(int);
+    raft::common::nvtx::push_range("Scatter Kernel");
     scatter_kernel<<<grid_size_avec_garbage, block_size, 0, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         raft::device_span<int>(predicate.data(), predicate.size()),
         to_fix.size());
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
+    raft::common::nvtx::pop_range();
 
 //! 2 - MAP
-
+    raft::common::nvtx::push_range("Apply Map Kernel");
     apply_map_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         image_size);
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
-
+    raft::common::nvtx::pop_range();
 
 //! 3 - HISTOGRAM EGALISATION
 
@@ -218,35 +225,38 @@ void fix_image_gpu_hand(Image& to_fix)
     CUDA_CHECK_ERROR(cudaMemset(histogram.data(), 0, histogram.size() * sizeof(int)));
     const int histogram_sharedMem = 256 * sizeof(int);
 
+    raft::common::nvtx::push_range("Histogram Kernel");
     histogram_kernel<<<grid_size_avec_garbage, block_size, histogram_sharedMem, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         raft::device_span<int>(histogram.data(), histogram.size()),
         image_size);
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
+    raft::common::nvtx::pop_range();
 
+    raft::common::nvtx::push_range("Scan Inclusif Kernel");
     your_scan(histogram, false);    // Scan inclusif
-
+    raft::common::nvtx::pop_range();
 
     //TODO: Ne pas utiliser un host ? (-> Petit kernel 256x1)
     std::vector<int> histogram_host(256);
     CUDA_CHECK_ERROR(cudaMemcpy(histogram_host.data(), histogram.data(), histogram.size() * sizeof(int), cudaMemcpyDeviceToHost));
 
-    int cdf_min = 0;
+    // int cdf_min = 0;
     
-    for (int i = 1; i < 256; ++i)
-    {
-        if (histogram_host[i] != 0)
-        {
-            cdf_min = histogram_host[i];
-            break;
-        }
-    }
+    // for (int i = 1; i < 256; ++i)
+    // {
+    //     if (histogram_host[i] != 0)
+    //     {
+    //         cdf_min = histogram_host[i];
+    //         break;
+    //     }
+    // }
+    auto first_none_zero = std::find_if(histogram_host.begin(), histogram_host.end(), [](auto v) { return v != 0; });
 
-    //? Modifier equealize_kernel pour qu'il prenne en compte le cdf_min 
-    // find_cdf_min_kernel<<<1, 256, 256 * sizeof(int), d_buffer.stream()>>>(histogram.data(), cdf.data(), image_size);
+    const int cdf_min = *first_none_zero;
 
-
+    raft::common::nvtx::push_range("Equalize Kernel");
     equalize_kernel<<<grid_size_non_garbage, block_size, 0, d_buffer.stream()>>>(
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),
         raft::device_span<int>(d_buffer.data(), d_buffer.size()),  // Réutilisation de d_buffer pour stocker le résultat
@@ -254,6 +264,7 @@ void fix_image_gpu_hand(Image& to_fix)
         cdf_min, image_size);
 
     CUDA_CHECK_ERROR(cudaStreamSynchronize(d_buffer.stream()));
+    raft::common::nvtx::pop_range();
     CUDA_CHECK_ERROR(cudaMemcpy(to_fix.buffer, d_buffer.data(), image_size * sizeof(int), cudaMemcpyDeviceToHost));
 }
 

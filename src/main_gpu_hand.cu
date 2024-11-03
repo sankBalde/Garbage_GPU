@@ -13,14 +13,19 @@
 #include "fix_gpu_hand.cuh"
 // #include "utils.cuh"
 
+#include <raft/common/nvtx.hpp>
+
 #include <rmm/mr/device/pool_memory_resource.hpp>
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
 
+    raft::common::nvtx::range fun_scope("Main Function");
     // RMM Setup
+    raft::common::nvtx::push_range("RMM Setup");
     auto memory_resource = make_pool();
     rmm::mr::set_current_device_resource(memory_resource.get());
+    raft::common::nvtx::pop_range();
 
     // -- Pipeline initialization
 
@@ -28,13 +33,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
     // - Get file paths
 
+    raft::common::nvtx::push_range("Get file paths");
     using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
     std::vector<std::string> filepaths;
     for (const auto& dir_entry : recursive_directory_iterator("../images"))
         filepaths.emplace_back(dir_entry.path());
-
+    raft::common::nvtx::pop_range();
     // - Init pipeline object
-
+    raft::common::nvtx::push_range("Init pipeline object");
     Pipeline pipeline(filepaths);
 
     // -- Main loop containing image retring from pipeline and fixing
@@ -43,7 +49,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     std::vector<Image> images(nb_images);
 
     // - One CPU thread is launched for each image
-
+    raft::common::nvtx::pop_range();
     std::cout << "Done, starting compute" << std::endl;
 
     #pragma omp parallel for
@@ -56,8 +62,10 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         // You *must not* copy all the images and only then do the computations
         // You must get the image from the pipeline as they arrive and launch computations right away
         // There are still ways to speeds this process of course
+        raft::common::nvtx::push_range("Image processing");
         images[i] = pipeline.get_image(i);
         fix_image_gpu_hand(images[i]);
+        raft::common::nvtx::pop_range();
     }
 
     std::cout << "Done with compute, starting stats" << std::endl;
@@ -81,10 +89,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         rmm::device_scalar<int> total(0, rmm::cuda_stream_default);
 
         // Copier les données de l'image du CPU vers le GPU
+        raft::common::nvtx::push_range("Copy Image Buffer to GPU");
         cudaMemcpy(buffer.data(), image.buffer, image_size * sizeof(int), cudaMemcpyHostToDevice);
+        raft::common::nvtx::pop_range();
 
         // FIXME: Remplir le buffer avec l'image
+        raft::common::nvtx::push_range("Reduce");
         your_reduce(buffer, total);
+        raft::common::nvtx::pop_range();
 
         // Copier le résultat total du GPU vers le CPU
         int result;
