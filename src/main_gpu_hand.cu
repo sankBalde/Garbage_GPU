@@ -93,7 +93,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         cudaMemcpy(buffer.data(), image.buffer, image_size * sizeof(int), cudaMemcpyHostToDevice);
         raft::common::nvtx::pop_range();
 
-        // FIXME: Remplir le buffer avec l'image
+        // TODO: Remplir le buffer avec l'image
         raft::common::nvtx::push_range("Reduce");
         your_reduce(buffer, total);
         raft::common::nvtx::pop_range();
