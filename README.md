@@ -1,5 +1,39 @@
 # IRGPUA PROJECT
 
+## Comment lancer notre projet :
+
+### Build
+
+```bash
+unzip images.zip
+mkdir build && cd build
+cmake ..
+make -j
+```
+
+### Run :
+
+Pour la version CPU
+```bash
+cd build && ./main_cpu
+```
+
+
+Pour la version GPU_hand
+```bash
+cd build && ./main_gpu_hand
+```
+
+
+Pour la version GPU_industrielle
+```bash
+cd build && ./main_gpu_industrial
+```
+
+PS : Il arrive des fois que le code ne s'execute pas correctement dès la première itération,
+il suffit de le relancer et normalement ça devrait fonctionner.
+
+
 ## Project presentation :
 
 ### Introduction :
