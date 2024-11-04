@@ -44,7 +44,11 @@ struct Image
         {
             // TODO : Isn't there a better way to allocate the CPU Memory
             // To speed up the Host-to-Device Transfert ?
-            buffer = (int *)malloc(width * height * sizeof(int));
+            //buffer = (int *)malloc(width * height * sizeof(int));
+            // Utilisation de cudaMallocHost pour la mémoire pinnée
+            if (cudaMallocHost((void **)&buffer, width * height * sizeof(int)) != cudaSuccess)
+                throw std::runtime_error("Failed to allocate pinned memory");
+
             infile.seekg(1, infile.cur);
             for (int i = 0; i < width * height; ++i)
             {
@@ -71,7 +75,11 @@ struct Image
             }
             // TODO : Isn't there a better way to allocate the CPU Memory
             // To speed up the Host-to-Device Transfert ?
-            buffer = (int *)malloc(image_size * sizeof(int));
+            //buffer = (int *)malloc(image_size * sizeof(int));
+            // Utilisation de cudaMallocHost pour la mémoire pinnée
+            if (cudaMallocHost((void **)&buffer, image_size * sizeof(int)) != cudaSuccess)
+                throw std::runtime_error("Failed to allocate pinned memory");
+
 
             std::stringstream lineStream(line);
             std::string s;
@@ -113,7 +121,7 @@ struct Image
         }
     }
 
-    int *buffer;
+    int *buffer = nullptr;
     int height = -1;
     int width = -1;
     int actual_size = -1;
