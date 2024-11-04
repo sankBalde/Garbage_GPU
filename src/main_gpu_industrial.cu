@@ -113,6 +113,10 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         images[sorted_id].write(oss.str());
     }
 
+    for (int i = 0; i < nb_images; ++i)
+        //free(images[i].buffer);
+        cudaFreeHost(images[i].buffer);
+
     std::cout << "Done, the internet is safe now :)" << std::endl;
 
     return 0;

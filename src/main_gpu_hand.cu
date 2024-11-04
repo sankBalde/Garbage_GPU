@@ -142,7 +142,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     // Cleaning
     // TODO : Don't forget to update this if you change allocation style
     for (int i = 0; i < nb_images; ++i)
-        free(images[i].buffer);
+        //free(images[i].buffer);
+        cudaFreeHost(images[i].buffer);
 
     return 0;
 }
